@@ -42,11 +42,22 @@ try {
     $sourceName = $profiles[$sourceIndex - 1].Name
     Write-Host "`nSelected Source User: $sourceName ($sourceProfile)`n"
 
-    # Select destination (Entra) user
-    $destinationIndex = Read-Host "`nEnter the number of the NEW user profile to copy to"
-    $destinationProfile = $profiles[$destinationIndex - 1].FullName
-    $destinationName = $profiles[$destinationIndex - 1].Name
-    Write-Host "`nSelected Destination User: $destinationName ($destinationProfile)`n"
+    # Filter out the source user from the list
+$destinationProfiles = $profiles | Where-Object { $_.Name -ne $sourceName }
+
+# Display destination profiles excluding the source
+Write-Host "`nAvailable Destination User Profiles:`n"
+$destinationProfiles | ForEach-Object -Begin { $j = 1 } -Process {
+    Write-Host "$j. $($_.Name)"
+    $j++
+}
+
+# Select destination (Entra) user from the filtered list
+$destinationIndex = Read-Host "`nEnter the number of the NEW user profile to copy to"
+$destinationProfile = $destinationProfiles[$destinationIndex - 1].FullName
+$destinationName = $destinationProfiles[$destinationIndex - 1].Name
+Write-Host "`nSelected Destination User: $destinationName ($destinationProfile)`n"
+
 
     # Disk space check
     Write-Host "`nChecking disk space..."
@@ -85,11 +96,15 @@ try {
     }
 
     foreach ($folder in $foldersToCopy) {
-        $itemsCompleted++
-        $percentComplete = [math]::Round(($itemsCompleted / $totalItems) * 100)
-
-        Show-Progress -Activity "Migrating profile data" -Status "Copying $folder ($itemsCompleted of $totalItems)..." -PercentComplete $percentComplete
-
+    if ([string]::IsNullOrWhiteSpace($folder)) {
+        continue
+    }
+    
+    $itemsCompleted++
+    $percentComplete = [math]::Round(($itemsCompleted / $totalItems) * 100)
+    $status = "Copying $folder ($itemsCompleted of $totalItems)..."
+    
+    Show-Progress -Activity "Migrating profile data" -Status $status -PercentComplete $percentComplete
         $sourceFolder = Join-Path $sourceProfile $folder
         $destinationFolder = Join-Path $destinationProfile $folder
 
@@ -108,44 +123,50 @@ try {
         }
     }
 
-    # AppData\Roaming copy
-    $itemsCompleted++
-    $percentComplete = [math]::Round(($itemsCompleted / $totalItems) * 100)
+    # Final progress update for AppData\Roaming
+$status = "Copying AppData\Roaming (final step)"
+Show-Progress -Activity "Migrating profile data" -Status $status -PercentComplete 100
 
-    Show-Progress -Activity "Migrating profile data" -Status "Copying AppData\Roaming ($itemsCompleted of $totalItems)..." -PercentComplete $percentComplete
+$sourceAppData = Join-Path $sourceProfile "AppData\Roaming"
+$destinationAppData = Join-Path $destinationProfile "AppData\Roaming"
 
-    $sourceAppData = Join-Path $sourceProfile "AppData\Roaming"
-    $destinationAppData = Join-Path $destinationProfile "AppData\Roaming"
+if (Test-Path $sourceAppData) {
+    Write-Host "`nCopying AppData\Roaming with Robocopy..."
 
-    if (Test-Path $sourceAppData) {
-        Write-Host "`nCopying AppData\Roaming with Robocopy..."
-        $robocopyLog = "C:\MigrationLogs\Robocopy_AppDataRoaming_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').log"
-        robocopy $sourceAppData $destinationAppData /MIR /Z /MT:16 /R:2 /W:5 /LOG+:"$robocopyLog" | Out-Null
+    # Show progress for this specific step only
+    Write-Progress -Activity "Migrating profile data" -Status "Copying AppData\Roaming..." -PercentComplete 100
 
-        # Apply permissions
-        $acl = Get-Acl $destinationAppData
-        $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("$destinationName", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
-        $acl.SetAccessRule($accessRule)
-        Set-Acl $destinationAppData $acl
-    } else {
-        Write-Host "No AppData\Roaming found in source profile."
-    }
+    $robocopyLog = "C:\MigrationLogs\Robocopy_AppDataRoaming_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').log"
+    robocopy $sourceAppData $destinationAppData /MIR /Z /MT:16 /R:2 /W:5 /LOG+:"$robocopyLog" | Out-Null
 
-    Show-Progress -Activity "Migrating profile data" -Completed
+    # Apply permissions
+    $acl = Get-Acl $destinationAppData
+    $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("$destinationName", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+    $acl.SetAccessRule($accessRule)
+    Set-Acl $destinationAppData $acl
+
+    # Complete the progress bar
+    Write-Progress -Activity "Migrating profile data" -Completed
+} else {
+    Write-Host "No AppData\Roaming found in source profile."
+}
+# Clear progress bar
+# Show-Progress -Activity "Migrating profile data" -Completed
+
 
     # Optional source profile deletion
-    $cleanupConfirm = Read-Host "`nDo you want to DELETE the old profile '$sourceProfile'? (Y/N)"
-    if ($cleanupConfirm -in @('Y', 'y')) {
-        try {
-            Remove-Item -Path $sourceProfile -Recurse -Force
-            Write-Host "Old profile '$sourceProfile' deleted."
-        }
-        catch {
-            Write-Host "Failed to delete old profile: $_"
-        }
-    } else {
-        Write-Host "Old profile retained."
-    }
+    # $cleanupConfirm = Read-Host "`nDo you want to DELETE the old profile '$sourceProfile'? (Y/N)"
+    # if ($cleanupConfirm -in @('Y', 'y')) {
+    #    try {
+    #        Remove-Item -Path $sourceProfile -Recurse -Force
+    #        Write-Host "Old profile '$sourceProfile' deleted."
+    #    }
+    #    catch {
+    #        Write-Host "Failed to delete old profile: $_"
+    #    }
+    #} else {
+    #    Write-Host "Old profile retained."
+    #}
 
     Write-Host "`n Migration complete! Full log saved to $logPath"
 }
